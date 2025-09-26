@@ -1,110 +1,126 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.30;
+// 导入 Hardhat 的 console.log
 
-contract Bank {
-    // 管理员地址
+interface IBank {
+    struct TopThreeUser {
+        address addr;
+        uint amount;
+    }
+
+    function withDraw() external payable;
+
+    function setAdmin(address newAdmin) external;
+}
+contract Bank is IBank {
+    mapping(address => uint) public balances;
+    address ownerAddr;
+    address contractAddr;
+    TopThreeUser[4] topusers;
+
+    constructor() payable {
+        ownerAddr = msg.sender;
+        contractAddr = address(this);
+        for (uint i = 0; i < 4; i++) {
+            topusers[i] = TopThreeUser(address(0), 0);
+        }
+    }
+
+    modifier onlyOwner() {
+    
+        // console.log("origin:", tx.origin);
+        require(msg.sender == ownerAddr, unicode"仅钱包管理员可以操作");
+        _;
+    }
+    modifier onlyContractAddrOwner() {
+       
+        // console.log("origin:", tx.origin);
+        require(address(this) == contractAddr, unicode"仅部署初始合约地址可以操作");
+        _;
+    }
+    function withDraw() external payable onlyContractAddrOwner {
+        payable(ownerAddr).transfer(address(this).balance);
+    }
+
+    function gettop3() public view returns (TopThreeUser[] memory) {
+        TopThreeUser[] memory top3users = new TopThreeUser[](3);
+        for (uint i = 0; i < 3; i++) {
+            top3users[i] = TopThreeUser(topusers[i].addr, topusers[i].amount);
+        }
+
+        return top3users;
+    }
+    function deposit() public payable virtual {
+        balances[msg.sender] += msg.value;
+
+        // 将新用户存入第3个位置（索引3），然后排序前4个
+        topusers[3] = TopThreeUser(msg.sender, msg.value);
+
+        TopThreeUser memory temp;
+        bool swapped;
+        uint length = 4;
+
+        for (uint i = 0; i < length; i++) {
+            swapped = false;
+            // ✅ 修正：j < length - i - 1，避免访问 j+1 越界
+            for (uint j = 0; j < length - i - 1; j++) {
+                if (topusers[j].amount < topusers[j + 1].amount) {
+                    // 降序排列（从高到低）
+                    temp = topusers[j];
+                    topusers[j] = topusers[j + 1];
+                    topusers[j + 1] = temp;
+                    swapped = true;
+                }
+            }
+            if (!swapped) break;
+        }
+    }
+    function setAdmin(address newOwner) external onlyOwner {
+        require(
+            newOwner != address(0),
+            "Cannot transfer ownership to zero address"
+        );
+        ownerAddr = newOwner;
+    }
+    receive() external payable {}
+}
+
+contract BigBank is Bank {
+    modifier minBigDeposit() {
+        require(
+            msg.value > 0.001 ether,
+            "Deposit must be greater than 0.001 ether"
+        );
+        _;
+    }
+
+    function deposit() public payable override minBigDeposit {
+        // 调用父类的 deposit 逻辑
+        super.deposit();
+    }
+
+    function getOwner() external view returns (address) {
+        return ownerAddr;
+    }
+}
+// ✅ 新增：Admin 合约
+contract Admin {
     address public owner;
-
-    // 存款映射：记录每个地址的存款金额
-    mapping(address => uint256) public deposits;
-
-    // 存储前3名存款用户的地址
-    address[3] public topDepositors;
-
-    // 事件：记录存款和取款
-    event Deposit(address indexed user, uint256 amount);
-    event Withdraw(address indexed owner, uint256 amount);
-
-    // 构造函数：部署时设置管理员
-    constructor() {
+    IBank public bank; // Bank 合约
+    constructor(address bankAddress) {
         owner = msg.sender;
+        bank = IBank(bankAddress);
     }
 
-    // 接收存款：支持直接转账
-    receive() external payable {
-        _deposit();
-    }
-
-    fallback() external payable {
-        _deposit();
-    }
-
-    // 内部存款处理函数
-    function _deposit()  internal {
-        require(msg.value > 0, "Deposit amount must be greater than 0");
-
-        uint256 newDeposit = deposits[msg.sender] + msg.value;
-        deposits[msg.sender] = newDeposit;
-
-        // 更新前3名
-        _updateTopDepositors(msg.sender);
-
-        emit Deposit(msg.sender, msg.value);
-    }
-
-    // 更新前3名存款用户
-    function _updateTopDepositors(address depositor) private {
-        // 将当前用户的地址插入到前3名中（按存款金额排序）
-        address[3] memory oldTop = topDepositors; // 临时保存
-
-        // 把当前 depositor 加入候选列表
-        address[4] memory candidates = [oldTop[0], oldTop[1], oldTop[2], depositor];
-
-        // 简单排序：冒泡排序（因为只有4个元素）
-        for (uint256 i = 0; i < 4; i++) {
-            for (uint256 j = i + 1; j < 4; j++) {
-                if (deposits[candidates[i]] < deposits[candidates[j]]) {
-                    address temp = candidates[i];
-                    candidates[i] = candidates[j];
-                    candidates[j] = temp;
-                }
-            }
-        }
-
-        // 取前3名，去重（避免同一个地址重复）
-        uint256 count = 0;
-        for (uint256 i = 0; i < 4; i++) {
-            if (count >= 3) break;
-            // 避免重复添加同一地址
-            bool exists = false;
-            for (uint256 k = 0; k < count; k++) {
-                if (topDepositors[k] == candidates[i]) {
-                    exists = true;
-                    break;
-                }
-            }
-            if (!exists) {
-                topDepositors[count] = candidates[i];
-                count++;
-            }
-        }
-        // 剩余位置清空（可选，也可以保留旧值）
-        while (count < 3) {
-            topDepositors[count] = address(0);
-            count++;
-        }
-    }
-
-    // 提款函数：仅管理员可调用
-    function withdraw() external {
+    modifier onlyOwner() {
         require(msg.sender == owner, "Not the owner");
-        uint256 balance = address(this).balance;
-        require(balance > 0, "No funds to withdraw");
-
-        // 安全转账
-        (bool success,) = owner.call{value: balance}("");
-        require(success, "Transfer failed");
-
-        emit Withdraw(owner, balance);
+        _;
     }
 
-    // 查询合约余额（只读）
-    function getContractBalance() external view returns (uint256) {
-        return address(this).balance;
+    function adminWithdraw() external onlyOwner {
+        bank.withDraw();
     }
 
-    // 查询某个地址的存款
-    function getDepositOf(address user) external view returns (uint256) {
-        return deposits[user];
-    }
+    // Admin 合约也能接收 ETH
+    receive() external payable {}
 }
